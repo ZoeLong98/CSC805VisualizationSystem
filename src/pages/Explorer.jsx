@@ -21,6 +21,85 @@ const SEVERITY_LABELS = {
 
 const WEATHER_OPTIONS = ['Clear', 'Fair', 'Cloudy', 'Rain', 'Fog', 'Snow', 'Haze', 'Thunderstorm']
 
+function formatSliderDate(ts) {
+  const d = new Date(ts)
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function TimelineSlider({ dateRange, sliderRange, onRangeChange }) {
+  if (!dateRange) return null
+
+  const { min, max } = dateRange
+
+  const handleStartChange = (e) => {
+    const val = Number(e.target.value)
+    onRangeChange([Math.min(val, sliderRange[1]), sliderRange[1]])
+  }
+
+  const handleEndChange = (e) => {
+    const val = Number(e.target.value)
+    onRangeChange([sliderRange[0], Math.max(val, sliderRange[0])])
+  }
+
+  const leftPct = ((sliderRange[0] - min) / (max - min)) * 100
+  const rightPct = ((sliderRange[1] - min) / (max - min)) * 100
+
+  return (
+    <div
+      className="absolute bottom-0 left-0 right-0 z-[1000]"
+      style={{ pointerEvents: 'none' }}
+    >
+      <div
+        className="bg-white/95 backdrop-blur shadow-lg border-t border-gray-200 px-6 py-3"
+        style={{ pointerEvents: 'auto' }}
+      >
+        <div className="flex items-center gap-4">
+          <span className="text-xs font-medium text-gray-500 whitespace-nowrap">Timeline</span>
+          <div className="flex-1">
+            <div className="flex justify-between text-xs text-gray-700 font-medium mb-1">
+              <span>{formatSliderDate(sliderRange[0])}</span>
+              <span>{formatSliderDate(sliderRange[1])}</span>
+            </div>
+            <div className="relative h-6">
+              {/* Track background */}
+              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 bg-gray-200 rounded-full" />
+              {/* Active range */}
+              <div
+                className="absolute top-1/2 -translate-y-1/2 h-1.5 bg-blue-500 rounded-full"
+                style={{ left: `${leftPct}%`, right: `${100 - rightPct}%` }}
+              />
+              {/* Start handle */}
+              <input
+                type="range"
+                min={min}
+                max={max}
+                value={sliderRange[0]}
+                onChange={handleStartChange}
+                className="timeline-range-input absolute inset-0 w-full"
+                style={{ zIndex: sliderRange[0] > min + (max - min) * 0.9 ? 4 : 3 }}
+              />
+              {/* End handle */}
+              <input
+                type="range"
+                min={min}
+                max={max}
+                value={sliderRange[1]}
+                onChange={handleEndChange}
+                className="timeline-range-input absolute inset-0 w-full"
+                style={{ zIndex: 3 }}
+              />
+            </div>
+            <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
+              <span>{formatSliderDate(min)}</span>
+              <span>{formatSliderDate(max)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function createCircleIcon(severity) {
   const color = SEVERITY_COLORS[severity] || '#6b7280'
   return L.divIcon({
@@ -358,6 +437,10 @@ export default function Explorer() {
     severity: [1, 2, 3, 4],
     weather: [],
   })
+  const [dateRange, setDateRange] = useState(null)
+  const [sliderRange, setSliderRange] = useState(null)
+  const filtersRef = useRef(filters)
+  const sliderRangeRef = useRef(sliderRange)
 
   useEffect(() => {
     if (mapInstanceRef.current) return
@@ -426,25 +509,61 @@ export default function Explorer() {
       }
 
       setLoading(false)
+
+      // Compute date range from all loaded markers
+      let minTs = Infinity, maxTs = -Infinity
+      for (const m of allMarkersRef.current) {
+        const d = parseDate(m.accidentData.startTime)
+        if (d) {
+          const ts = d.getTime()
+          if (ts < minTs) minTs = ts
+          if (ts > maxTs) maxTs = ts
+        }
+      }
+      if (minTs < Infinity && maxTs > -Infinity) {
+        setDateRange({ min: minTs, max: maxTs })
+        setSliderRange([minTs, maxTs])
+      }
     } catch (err) {
       console.error('Failed to load map data:', err)
       setLoading(false)
     }
   }
 
+  const refilter = useCallback((f, sr) => {
+    const cg = clusterGroupRef.current
+    if (!cg) return
+    cg.clearLayers()
+    const visible = allMarkersRef.current.filter((m) => {
+      if (!matchesFilters(m.accidentData, f)) return false
+      if (sr) {
+        const d = parseDate(m.accidentData.startTime)
+        if (d) {
+          const ts = d.getTime()
+          if (ts < sr[0] || ts > sr[1]) return false
+        }
+      }
+      return true
+    })
+    cg.addLayers(visible)
+  }, [])
+
   const applyFilters = useCallback(
     (newFilters) => {
       setFilters(newFilters)
-      const cg = clusterGroupRef.current
-      if (!cg) return
-
-      cg.clearLayers()
-      const visible = allMarkersRef.current.filter((m) =>
-        matchesFilters(m.accidentData, newFilters)
-      )
-      cg.addLayers(visible)
+      filtersRef.current = newFilters
+      refilter(newFilters, sliderRangeRef.current)
     },
-    []
+    [refilter]
+  )
+
+  const handleSliderChange = useCallback(
+    (newRange) => {
+      setSliderRange(newRange)
+      sliderRangeRef.current = newRange
+      refilter(filtersRef.current, newRange)
+    },
+    [refilter]
   )
 
   const pct = progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0
@@ -491,7 +610,15 @@ export default function Explorer() {
         </div>
       )}
 
-      <div className="absolute bottom-4 right-4 z-[1000] bg-white rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs text-gray-600">
+      {!loading && dateRange && sliderRange && (
+        <TimelineSlider
+          dateRange={dateRange}
+          sliderRange={sliderRange}
+          onRangeChange={handleSliderChange}
+        />
+      )}
+
+      <div className={`absolute right-4 z-[1000] bg-white rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs text-gray-600 ${dateRange ? 'bottom-20' : 'bottom-4'}`}>
         {Object.entries(SEVERITY_COLORS).map(([sev, color]) => (
           <span key={sev} className="flex items-center gap-1">
             <span className="inline-block w-3 h-3 rounded-full" style={{ background: color }} />
