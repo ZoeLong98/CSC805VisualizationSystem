@@ -4,7 +4,6 @@ import SeverityDistribution from '../components/analytics/SeverityDistribution'
 import TopCounties from '../components/analytics/TopCounties'
 import WeatherConditions from '../components/analytics/WeatherConditions'
 import DayHourHeatmap from '../components/analytics/DayHourHeatmap'
-import MonthlyTrend from '../components/analytics/MonthlyTrend'
 
 export default function Analytics() {
   return (
@@ -14,7 +13,7 @@ export default function Analytics() {
       {/* Row 1: KPI cards */}
       <KpiCards />
 
-      {/* Row 2: Accidents Over Time (wider) + Severity Distribution (narrower) */}
+      {/* Row 2: Monthly Trend (wider) + Severity Distribution (narrower) */}
       <div className="grid grid-cols-5 gap-6">
         <div className="col-span-3">
           <AccidentsOverTime />
@@ -32,9 +31,6 @@ export default function Analytics() {
           <DayHourHeatmap />
         </div>
       </div>
-
-      {/* Row 4: Monthly Trend (full width) */}
-      <MonthlyTrend />
     </div>
   )
 }

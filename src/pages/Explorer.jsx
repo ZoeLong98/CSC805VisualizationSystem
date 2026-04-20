@@ -1,582 +1,151 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
-import 'leaflet.markercluster'
-import 'leaflet.markercluster/dist/MarkerCluster.css'
-import 'leaflet.markercluster/dist/MarkerCluster.Default.css'
+import { useSearchParams } from 'react-router-dom'
 
-const SEVERITY_COLORS = {
-  1: '#22c55e', // green
-  2: '#eab308', // yellow
-  3: '#f97316', // orange
-  4: '#ef4444', // red
-}
+import FilterSidebar from '../components/explorer/FilterSidebar'
+import DetailPanel from '../components/explorer/DetailPanel'
+import TimelineSlider from '../components/explorer/TimelineSlider'
+import LoadingProgress from '../components/explorer/LoadingProgress'
+import { explorerCache } from '../components/explorer/explorerCache'
 
-const SEVERITY_LABELS = {
-  1: 'Minor',
-  2: 'Moderate',
-  3: 'Serious',
-  4: 'Fatal',
-}
+import { useAccidentRecords } from '../hooks/useAccidentRecords'
+import { useExplorerMap } from '../hooks/useExplorerMap'
 
-const WEATHER_OPTIONS = ['Clear', 'Fair', 'Cloudy', 'Rain', 'Fog', 'Snow', 'Haze', 'Thunderstorm']
+import { createCircleIcon } from '../lib/markerFactory'
+import { matchesFilters, withinTimestampRange } from '../lib/filters'
+import { computeDateRange, syncFiltersWithRange, clampRange } from '../lib/dateRange'
+import { SEVERITY_LEVELS } from '../lib/constants'
 
-function formatSliderDate(ts) {
-  const d = new Date(ts)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
-function TimelineSlider({ dateRange, sliderRange, onRangeChange }) {
-  if (!dateRange) return null
-
-  const { min, max } = dateRange
-
-  const handleStartChange = (e) => {
-    const val = Number(e.target.value)
-    onRangeChange([Math.min(val, sliderRange[1]), sliderRange[1]])
-  }
-
-  const handleEndChange = (e) => {
-    const val = Number(e.target.value)
-    onRangeChange([sliderRange[0], Math.max(val, sliderRange[0])])
-  }
-
-  const leftPct = ((sliderRange[0] - min) / (max - min)) * 100
-  const rightPct = ((sliderRange[1] - min) / (max - min)) * 100
-
-  return (
-    <div
-      className="absolute bottom-0 left-0 right-0 z-[1000]"
-      style={{ pointerEvents: 'none' }}
-    >
-      <div
-        className="bg-white/95 backdrop-blur shadow-lg border-t border-gray-200 px-6 py-3"
-        style={{ pointerEvents: 'auto' }}
-      >
-        <div className="flex items-center gap-4">
-          <span className="text-xs font-medium text-gray-500 whitespace-nowrap">Timeline</span>
-          <div className="flex-1">
-            <div className="flex justify-between text-xs text-gray-700 font-medium mb-1">
-              <span>{formatSliderDate(sliderRange[0])}</span>
-              <span>{formatSliderDate(sliderRange[1])}</span>
-            </div>
-            <div className="relative h-6">
-              {/* Track background */}
-              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1.5 bg-gray-200 rounded-full" />
-              {/* Active range */}
-              <div
-                className="absolute top-1/2 -translate-y-1/2 h-1.5 bg-blue-500 rounded-full"
-                style={{ left: `${leftPct}%`, right: `${100 - rightPct}%` }}
-              />
-              {/* Start handle */}
-              <input
-                type="range"
-                min={min}
-                max={max}
-                value={sliderRange[0]}
-                onChange={handleStartChange}
-                className="timeline-range-input absolute inset-0 w-full"
-                style={{ zIndex: sliderRange[0] > min + (max - min) * 0.9 ? 4 : 3 }}
-              />
-              {/* End handle */}
-              <input
-                type="range"
-                min={min}
-                max={max}
-                value={sliderRange[1]}
-                onChange={handleEndChange}
-                className="timeline-range-input absolute inset-0 w-full"
-                style={{ zIndex: 3 }}
-              />
-            </div>
-            <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
-              <span>{formatSliderDate(min)}</span>
-              <span>{formatSliderDate(max)}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function createCircleIcon(severity) {
-  const color = SEVERITY_COLORS[severity] || '#6b7280'
-  return L.divIcon({
-    className: '',
-    html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.3);"></div>`,
-    iconSize: [12, 12],
-    iconAnchor: [6, 6],
-  })
-}
-
-function parseDate(dateStr) {
-  if (!dateStr) return null
-  const d = new Date(dateStr)
-  return isNaN(d.getTime()) ? null : d
-}
-
-function FilterSidebar({ filters, onFilterChange, collapsed, onToggle }) {
-  return (
-    <div
-      className="absolute top-0 left-0 z-[1000] h-full flex"
-      style={{ pointerEvents: 'none' }}
-    >
-      <div
-        className="bg-white shadow-lg flex flex-col transition-all duration-300 overflow-hidden"
-        style={{
-          width: collapsed ? '0px' : '280px',
-          pointerEvents: 'auto',
-        }}
-      >
-        {!collapsed && (
-          <div className="flex flex-col h-full overflow-y-auto p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
-              <button
-                onClick={onToggle}
-                className="p-1 hover:bg-gray-100 rounded text-gray-500"
-                title="Collapse filters"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Date Range */}
-            <div className="mb-5">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Date Range</h3>
-              <div className="space-y-2">
-                <div>
-                  <label className="text-xs text-gray-500">Start Date</label>
-                  <input
-                    type="date"
-                    value={filters.startDate}
-                    onChange={(e) => onFilterChange({ ...filters, startDate: e.target.value })}
-                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500">End Date</label>
-                  <input
-                    type="date"
-                    value={filters.endDate}
-                    onChange={(e) => onFilterChange({ ...filters, endDate: e.target.value })}
-                    className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Severity */}
-            <div className="mb-5">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Severity</h3>
-              <div className="space-y-1.5">
-                {[1, 2, 3, 4].map((level) => (
-                  <label key={level} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filters.severity.includes(level)}
-                      onChange={() => {
-                        const next = filters.severity.includes(level)
-                          ? filters.severity.filter((s) => s !== level)
-                          : [...filters.severity, level]
-                        onFilterChange({ ...filters, severity: next })
-                      }}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span
-                      className="inline-block w-3 h-3 rounded-full"
-                      style={{ background: SEVERITY_COLORS[level] }}
-                    />
-                    <span className="text-sm text-gray-700">
-                      {level} - {SEVERITY_LABELS[level]}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Weather Condition */}
-            <div className="mb-5">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Weather Condition</h3>
-              <div className="space-y-1.5">
-                {WEATHER_OPTIONS.map((w) => (
-                  <label key={w} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={filters.weather.includes(w)}
-                      onChange={() => {
-                        const next = filters.weather.includes(w)
-                          ? filters.weather.filter((x) => x !== w)
-                          : [...filters.weather, w]
-                        onFilterChange({ ...filters, weather: next })
-                      }}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-gray-700">{w}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Reset */}
-            <button
-              onClick={() =>
-                onFilterChange({
-                  startDate: '',
-                  endDate: '',
-                  severity: [1, 2, 3, 4],
-                  weather: [],
-                })
-              }
-              className="mt-auto text-sm text-blue-600 hover:text-blue-800 font-medium py-2"
-            >
-              Reset Filters
-            </button>
-          </div>
-        )}
-      </div>
-
-      {collapsed && (
-        <button
-          onClick={onToggle}
-          className="bg-white shadow-lg rounded-r-lg px-2 py-3 hover:bg-gray-50 self-start mt-4"
-          style={{ pointerEvents: 'auto' }}
-          title="Expand filters"
-        >
-          <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-          </svg>
-        </button>
-      )}
-    </div>
-  )
-}
-
-function DetailPanel({ accident, onClose }) {
-  if (!accident) {
-    return (
-      <div
-        className="absolute top-0 right-0 z-[1000] h-full flex"
-        style={{ pointerEvents: 'none' }}
-      >
-        <div
-          className="bg-white shadow-lg w-[320px] flex items-center justify-center p-6"
-          style={{ pointerEvents: 'auto' }}
-        >
-          <div className="text-center text-gray-400">
-            <svg className="w-12 h-12 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-            </svg>
-            <p className="text-sm">Click on an accident marker to view details</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const date = parseDate(accident.startTime)
-  const formattedDate = date
-    ? date.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
-    : 'Unknown'
-  const formattedTime = date
-    ? date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    : ''
-
-  return (
-    <div
-      className="absolute top-0 right-0 z-[1000] h-full flex"
-      style={{ pointerEvents: 'none' }}
-    >
-      <div
-        className="bg-white shadow-lg w-[320px] flex flex-col h-full overflow-y-auto"
-        style={{ pointerEvents: 'auto' }}
-      >
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Accident Details</h2>
-            <button
-              onClick={onClose}
-              className="p-1 hover:bg-gray-100 rounded text-gray-500"
-              title="Close panel"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Location */}
-          <div className="mb-4">
-            <p className="text-sm font-medium text-gray-900">
-              {accident.street || 'Unknown Street'}
-            </p>
-            <p className="text-sm text-gray-500">
-              {accident.city}, {accident.state}
-            </p>
-          </div>
-
-          {/* Date & Time */}
-          <div className="mb-4">
-            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Date & Time</h3>
-            <p className="text-sm text-gray-900">{formattedDate}</p>
-            {formattedTime && <p className="text-sm text-gray-600">{formattedTime}</p>}
-          </div>
-
-          {/* Severity */}
-          <div className="mb-4">
-            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Severity</h3>
-            <span
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-medium text-white"
-              style={{ background: SEVERITY_COLORS[accident.severity] }}
-            >
-              <span className="w-2 h-2 rounded-full bg-white/40" />
-              Level {accident.severity} — {SEVERITY_LABELS[accident.severity]}
-            </span>
-          </div>
-
-          {/* Distance */}
-          {accident.distance != null && (
-            <div className="mb-4">
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Distance (mi)</h3>
-              <p className="text-sm text-gray-900">{Number(accident.distance).toFixed(2)}</p>
-            </div>
-          )}
-
-          {/* Description */}
-          {accident.description && (
-            <div className="mb-4">
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Description</h3>
-              <p className="text-sm text-gray-700 leading-relaxed">{accident.description}</p>
-            </div>
-          )}
-
-          {/* Weather Info */}
-          <div className="border-t border-gray-200 pt-4 mt-2">
-            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Weather Conditions</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-gray-50 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Temperature</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {accident.temperature != null ? `${accident.temperature}°F` : 'N/A'}
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Humidity</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {accident.humidity != null ? `${accident.humidity}%` : 'N/A'}
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Visibility</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {accident.visibility != null ? `${accident.visibility} mi` : 'N/A'}
-                </p>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Wind Speed</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {accident.windSpeed != null ? `${accident.windSpeed} mph` : 'N/A'}
-                </p>
-              </div>
-            </div>
-            {accident.weatherCondition && (
-              <p className="mt-3 text-sm text-gray-600">
-                <span className="text-gray-500">Condition:</span> {accident.weatherCondition}
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function matchesFilters(data, filters) {
-  // Severity filter
-  if (!filters.severity.includes(data.severity)) return false
-
-  // Date filter
-  if (filters.startDate || filters.endDate) {
-    const d = parseDate(data.startTime)
-    if (d) {
-      if (filters.startDate && d < new Date(filters.startDate)) return false
-      if (filters.endDate) {
-        const end = new Date(filters.endDate)
-        end.setHours(23, 59, 59, 999)
-        if (d > end) return false
-      }
-    }
-  }
-
-  // Weather filter (empty = all)
-  if (filters.weather.length > 0) {
-    const wc = (data.weatherCondition || '').toLowerCase()
-    const match = filters.weather.some((w) => wc.includes(w.toLowerCase()))
-    if (!match) return false
-  }
-
-  return true
-}
+const DEFAULT_FILTERS = { startDate: '', endDate: '', severity: [...SEVERITY_LEVELS], weather: [] }
 
 export default function Explorer() {
-  const mapRef = useRef(null)
-  const mapInstanceRef = useRef(null)
-  const clusterGroupRef = useRef(null)
+  const [searchParams] = useSearchParams()
+  const mapContainerRef = useRef(null)
   const allMarkersRef = useRef([])
-  const [loading, setLoading] = useState(true)
-  const [progress, setProgress] = useState({ loaded: 0, total: 0 })
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  const [filters, setFilters] = useState(explorerCache.filters || DEFAULT_FILTERS)
+  const [dateRange, setDateRange] = useState(explorerCache.dateRange || null)
+  const [sliderRange, setSliderRange] = useState(explorerCache.sliderRange || null)
   const [selectedAccident, setSelectedAccident] = useState(null)
   const [detailPanelOpen, setDetailPanelOpen] = useState(true)
-  const [filters, setFilters] = useState({
-    startDate: '',
-    endDate: '',
-    severity: [1, 2, 3, 4],
-    weather: [],
-  })
-  const [dateRange, setDateRange] = useState(null)
-  const [sliderRange, setSliderRange] = useState(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
   const filtersRef = useRef(filters)
   const sliderRangeRef = useRef(sliderRange)
+  filtersRef.current = filters
+  sliderRangeRef.current = sliderRange
 
-  useEffect(() => {
-    if (mapInstanceRef.current) return
+  const hasUrlTarget = !!(searchParams.get('lat') || searchParams.get('county'))
 
-    const map = L.map(mapRef.current, {
-      center: [37.77, -122.42],
-      zoom: 12,
-      zoomControl: true,
-    })
+  const { mapRef, clusterGroupRef } = useExplorerMap(mapContainerRef, {
+    hasUrlTarget,
+    onCleanup: () => {
+      explorerCache.filters = filtersRef.current
+      explorerCache.sliderRange = sliderRangeRef.current
+    },
+  })
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
-      maxZoom: 19,
-    }).addTo(map)
-
-    mapInstanceRef.current = map
-
-    const clusterGroup = L.markerClusterGroup({
-      chunkedLoading: true,
-      maxClusterRadius: 50,
-      spiderfyOnMaxZoom: true,
-      showCoverageOnHover: false,
-      disableClusteringAtZoom: 16,
-    })
-    map.addLayer(clusterGroup)
-    clusterGroupRef.current = clusterGroup
-
-    loadChunks(clusterGroup)
-
-    return () => {
-      map.remove()
-      mapInstanceRef.current = null
-    }
-  }, [])
-
-  async function loadChunks(clusterGroup) {
-    try {
-      const res = await fetch('/data/map/manifest.json')
-      const manifest = await res.json()
-      const { chunks, totalRecords } = manifest
-
-      setProgress({ loaded: 0, total: totalRecords })
-
-      let loadedCount = 0
-
-      for (const chunkFile of chunks) {
-        const chunkRes = await fetch(`/data/map/${chunkFile}`)
-        const records = await chunkRes.json()
-
-        const markers = records.map((r) => {
-          const marker = L.marker([r.lat, r.lng], {
-            icon: createCircleIcon(r.severity),
-          })
-          marker.accidentData = r
-          marker.on('click', () => {
-            setSelectedAccident(r)
-            setDetailPanelOpen(true)
-          })
-          return marker
-        })
-
-        allMarkersRef.current = [...allMarkersRef.current, ...markers]
-        clusterGroup.addLayers(markers)
-        loadedCount += records.length
-        setProgress({ loaded: loadedCount, total: totalRecords })
-      }
-
-      setLoading(false)
-
-      // Compute date range from all loaded markers
-      let minTs = Infinity, maxTs = -Infinity
-      for (const m of allMarkersRef.current) {
-        const d = parseDate(m.accidentData.startTime)
-        if (d) {
-          const ts = d.getTime()
-          if (ts < minTs) minTs = ts
-          if (ts > maxTs) maxTs = ts
-        }
-      }
-      if (minTs < Infinity && maxTs > -Infinity) {
-        setDateRange({ min: minTs, max: maxTs })
-        setSliderRange([minTs, maxTs])
-      }
-    } catch (err) {
-      console.error('Failed to load map data:', err)
-      setLoading(false)
-    }
-  }
+  const { records, progress, loading } = useAccidentRecords()
 
   const refilter = useCallback((f, sr) => {
     const cg = clusterGroupRef.current
     if (!cg) return
     cg.clearLayers()
-    const visible = allMarkersRef.current.filter((m) => {
-      if (!matchesFilters(m.accidentData, f)) return false
-      if (sr) {
-        const d = parseDate(m.accidentData.startTime)
-        if (d) {
-          const ts = d.getTime()
-          if (ts < sr[0] || ts > sr[1]) return false
-        }
-      }
-      return true
-    })
+    const visible = allMarkersRef.current.filter(
+      (m) => matchesFilters(m.accidentData, f) && withinTimestampRange(m.accidentData, sr)
+    )
     cg.addLayers(visible)
-  }, [])
+  }, [clusterGroupRef])
+
+  // Build markers once records + map are both ready
+  useEffect(() => {
+    if (!records || !clusterGroupRef.current) return
+    if (allMarkersRef.current.length > 0) return
+
+    const markers = records.map((r) => {
+      const marker = L.marker([r.lat, r.lng], { icon: createCircleIcon(r.severity) })
+      marker.accidentData = r
+      marker.on('click', () => {
+        setSelectedAccident(r)
+        setDetailPanelOpen(true)
+      })
+      return marker
+    })
+
+    allMarkersRef.current = markers
+    clusterGroupRef.current.addLayers(markers)
+
+    if (explorerCache.filters && explorerCache.sliderRange) {
+      refilter(explorerCache.filters, explorerCache.sliderRange)
+      return
+    }
+
+    const range = computeDateRange(records)
+    if (range) {
+      explorerCache.dateRange = range
+      setDateRange(range)
+      setSliderRange([range.min, range.max])
+      setFilters((prev) => syncFiltersWithRange(prev, range))
+    }
+  }, [records, clusterGroupRef, refilter])
+
+  // Fly to URL target (county or lat/lng) after markers load
+  useEffect(() => {
+    if (!mapRef.current || allMarkersRef.current.length === 0) return
+    flyToUrlTarget(mapRef.current, allMarkersRef.current, searchParams)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [records])
 
   const applyFilters = useCallback(
-    (newFilters) => {
-      setFilters(newFilters)
-      filtersRef.current = newFilters
-      refilter(newFilters, sliderRangeRef.current)
+    (next) => {
+      setFilters(next)
+      refilter(next, sliderRangeRef.current)
     },
     [refilter]
   )
 
   const handleSliderChange = useCallback(
-    (newRange) => {
-      setSliderRange(newRange)
-      sliderRangeRef.current = newRange
-      refilter(filtersRef.current, newRange)
+    (range) => {
+      setSliderRange(range)
+      const next = syncFiltersWithRange(filtersRef.current, { min: range[0], max: range[1] })
+      setFilters(next)
+      refilter(next, range)
     },
     [refilter]
   )
 
-  const pct = progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0
+  const handleDateRangeInput = useCallback(
+    ({ startDate, endDate }) => {
+      const next = { ...filtersRef.current }
+      if (startDate !== undefined) next.startDate = startDate
+      if (endDate !== undefined) next.endDate = endDate
+      setFilters(next)
+
+      if (!dateRange) {
+        refilter(next, sliderRangeRef.current)
+        return
+      }
+
+      const startTs = next.startDate ? new Date(next.startDate).getTime() : dateRange.min
+      const endTs = next.endDate ? new Date(next.endDate + 'T23:59:59').getTime() : dateRange.max
+      const newRange = clampRange([startTs, endTs], dateRange)
+      setSliderRange(newRange)
+      refilter(next, newRange)
+    },
+    [refilter, dateRange]
+  )
 
   return (
     <div className="flex-1 relative" style={{ height: 'calc(100vh - 65px)' }}>
-      <div ref={mapRef} className="absolute inset-0 z-0" />
+      <div ref={mapContainerRef} className="absolute inset-0 z-0" />
 
       <FilterSidebar
         filters={filters}
         onFilterChange={applyFilters}
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((c) => !c)}
+        dateRange={dateRange}
+        onDateRangeInput={handleDateRangeInput}
       />
 
       {detailPanelOpen && (
@@ -589,26 +158,7 @@ export default function Explorer() {
         />
       )}
 
-      {loading && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white rounded-lg shadow-lg px-6 py-3 flex items-center gap-3">
-          <svg className="animate-spin h-5 w-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-gray-900">Loading accidents...</p>
-            <div className="w-48 h-2 bg-gray-200 rounded-full mt-1">
-              <div
-                className="h-2 bg-blue-600 rounded-full transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {progress.loaded.toLocaleString()} / {progress.total.toLocaleString()} ({pct}%)
-            </p>
-          </div>
-        </div>
-      )}
+      {loading && <LoadingProgress loaded={progress.loaded} total={progress.total} />}
 
       {!loading && dateRange && sliderRange && (
         <TimelineSlider
@@ -617,15 +167,25 @@ export default function Explorer() {
           onRangeChange={handleSliderChange}
         />
       )}
-
-      <div className={`absolute right-4 z-[1000] bg-white rounded-lg shadow px-3 py-2 flex items-center gap-2 text-xs text-gray-600 ${dateRange ? 'bottom-20' : 'bottom-4'}`}>
-        {Object.entries(SEVERITY_COLORS).map(([sev, color]) => (
-          <span key={sev} className="flex items-center gap-1">
-            <span className="inline-block w-3 h-3 rounded-full" style={{ background: color }} />
-            S{sev}
-          </span>
-        ))}
-      </div>
     </div>
   )
+}
+
+function flyToUrlTarget(map, markers, searchParams) {
+  const lat = searchParams.get('lat')
+  const lng = searchParams.get('lng')
+  const county = searchParams.get('county')
+  const state = searchParams.get('state')
+
+  if (lat && lng) {
+    map.flyTo([parseFloat(lat), parseFloat(lng)], 10, { duration: 1 })
+    return
+  }
+
+  if (county && state) {
+    const countyMarkers = markers.filter((m) => m.accidentData.state === state)
+    if (countyMarkers.length === 0) return
+    const bounds = L.latLngBounds(countyMarkers.map((m) => m.getLatLng()))
+    map.flyToBounds(bounds.pad(0.1), { maxZoom: 10, duration: 1 })
+  }
 }
