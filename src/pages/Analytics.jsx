@@ -4,6 +4,7 @@ import SeverityDistribution from '../components/analytics/SeverityDistribution'
 import TopCounties from '../components/analytics/TopCounties'
 import WeatherConditions from '../components/analytics/WeatherConditions'
 import DayHourHeatmap from '../components/analytics/DayHourHeatmap'
+import MonthlyTrend from '../components/analytics/MonthlyTrend'
 
 export default function Analytics() {
   return (
@@ -14,6 +15,7 @@ export default function Analytics() {
       <TopCounties />
       <WeatherConditions />
       <DayHourHeatmap />
+      <MonthlyTrend />
     </div>
   )
 }
