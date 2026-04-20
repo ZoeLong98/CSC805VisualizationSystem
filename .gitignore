@@ -1,3 +1,6 @@
 node_modules
 dist
 .DS_Store
+
+# Raw Kaggle dataset — download separately (see README). Too large for git.
+US_Accidents_Full2022_parts/
